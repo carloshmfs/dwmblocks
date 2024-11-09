@@ -1,29 +1,46 @@
-#include<stdlib.h>
-#include<stdio.h>
-#include<string.h>
-#include<unistd.h>
-#include<signal.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+
 #ifndef NO_X
-#include<X11/Xlib.h>
+#include <X11/Xlib.h>
 #endif
+
 #ifdef __OpenBSD__
+
 #define SIGPLUS			SIGUSR1+1
 #define SIGMINUS		SIGUSR1-1
+
 #else
+
 #define SIGPLUS			SIGRTMIN
 #define SIGMINUS		SIGRTMIN
+
 #endif
+
 #define LENGTH(X)               (sizeof(X) / sizeof (X[0]))
 #define CMDLENGTH		50
 #define MIN( a, b ) ( ( a < b) ? a : b )
 #define STATUSLENGTH (LENGTH(blocks) * CMDLENGTH + 1)
 
+typedef enum {
+    shell_cmd,
+    callback
+} command_type;
+
 typedef struct {
 	char* icon;
-	char* command;
+    command_type type;
+    union {
+        char* cmdstr;
+        char* (*cmdfun)(void);
+    } command;
 	unsigned int interval;
 	unsigned int signal;
 } Block;
+
 #ifndef __OpenBSD__
 void dummysighandler(int num);
 #endif
@@ -47,8 +64,17 @@ static Window root;
 static void (*writestatus) () = pstdout;
 #endif
 
+//Modify this file to change what commands output to your statusbar, and recompile using the make command.
+static const Block blocks[] = {
+	/*Icon*/	/*Command*/		/*Update Interval*/	/*Update Signal*/
+	{"MEM: ", shell_cmd, { .cmdstr = "free -h | awk '/^Mem/ { print $3\"/\"$2 }' | sed s/i//g" },	30,		0},
 
-#include "blocks.h"
+	{"", shell_cmd, { .cmdstr = "date '+%a %d/%m/%Y %T'" },					5,		0},
+};
+
+//sets delimiter between status commands. NULL character ('\0') means no delimiter.
+static char delim[] = " | ";
+static unsigned int delimLen = 5;
 
 static char statusbar[LENGTH(blocks)][CMDLENGTH] = {0};
 static char statusstr[2][STATUSLENGTH];
@@ -58,27 +84,31 @@ static int statusContinue = 1;
 //opens process *cmd and stores output in *output
 void getcmd(const Block *block, char *output)
 {
-	//make sure status is same until output is ready
-	char tempstatus[CMDLENGTH] = {0};
-	strcpy(tempstatus, block->icon);
-	FILE *cmdf = popen(block->command, "r");
-	if (!cmdf)
-		return;
-	int i = strlen(block->icon);
-	fgets(tempstatus+i, CMDLENGTH-i-delimLen, cmdf);
-	i = strlen(tempstatus);
-	//if block and command output are both not empty
-	if (i != 0) {
-		//only chop off newline if one is present at the end
-		i = tempstatus[i-1] == '\n' ? i-1 : i;
-		if (delim[0] != '\0') {
-			strncpy(tempstatus+i, delim, delimLen);
-		}
-		else
-			tempstatus[i++] = '\0';
-	}
-	strcpy(output, tempstatus);
-	pclose(cmdf);
+    if (block->type == shell_cmd) {
+        //make sure status is same until output is ready
+        char tempstatus[CMDLENGTH] = {0};
+        strcpy(tempstatus, block->icon);
+        FILE *cmdf = popen(block->command.cmdstr, "r");
+        if (!cmdf)
+            return;
+        int i = strlen(block->icon);
+        fgets(tempstatus+i, CMDLENGTH-i-delimLen, cmdf);
+        i = strlen(tempstatus);
+        //if block and command output are both not empty
+        if (i != 0) {
+            //only chop off newline if one is present at the end
+            i = tempstatus[i-1] == '\n' ? i-1 : i;
+            if (delim[0] != '\0') {
+                strncpy(tempstatus+i, delim, delimLen);
+            }
+            else
+                tempstatus[i++] = '\0';
+        }
+        strcpy(output, tempstatus);
+        pclose(cmdf);
+    } else {
+        block->command.cmdfun();
+    }
 }
 
 void getcmds(int time)
@@ -87,7 +117,7 @@ void getcmds(int time)
 	for (unsigned int i = 0; i < LENGTH(blocks); i++) {
 		current = blocks + i;
 		if ((current->interval != 0 && time % current->interval == 0) || time == -1)
-			getcmd(current,statusbar[i]);
+			getcmd(current, statusbar[i]);
 	}
 }
 
@@ -193,11 +223,13 @@ void termhandler()
 int main(int argc, char** argv)
 {
 	for (int i = 0; i < argc; i++) {//Handle command line arguments
-		if (!strcmp("-d",argv[i]))
+		if (!strcmp("-d", argv[i])) {
 			strncpy(delim, argv[++i], delimLen);
-		else if (!strcmp("-p",argv[i]))
-			writestatus = pstdout;
+        } else if (!strcmp("-p", argv[i])) {
+            writestatus = pstdout;
+        }
 	}
+
 #ifndef NO_X
 	if (!setupX())
 		return 1;
@@ -210,5 +242,6 @@ int main(int argc, char** argv)
 #ifndef NO_X
 	XCloseDisplay(dpy);
 #endif
+
 	return 0;
 }
